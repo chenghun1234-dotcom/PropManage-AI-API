@@ -1,0 +1,153 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "PropManage AI API",
+    "description": "B2B AI API for Property Management: Lead Qualification, Maintenance Triage, and Lease Parsing.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "PropManage AI Support",
+      "url": "https://propmanage-ai.pages.dev"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://propmanage-ai-api.your-subdomain.workers.dev",
+      "description": "Production server"
+    }
+  ],
+  "paths": {
+    "/api/v1/inquiry/respond": {
+      "post": {
+        "summary": "Lead Qualification API",
+        "description": "Analyzes potential tenant inquiries and provides responses based on property information.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "inquiry": {
+                    "type": "string",
+                    "example": "Is the deposit negotiable?"
+                  },
+                  "property_info": {
+                    "type": "object",
+                    "description": "Arbitrary key-value pairs of property details.",
+                    "example": {
+                      "deposit": "$2000",
+                      "pet_policy": "No pets"
+                    }
+                  }
+                },
+                "required": ["inquiry"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "AI-generated response with lead scoring",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "answer": { "type": "string" },
+                    "lead_score": { "type": "integer", "minimum": 1, "maximum": 10 },
+                    "intent_analysis": { "type": "string" },
+                    "language_detected": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/maintenance/classify": {
+      "post": {
+        "summary": "Maintenance Triage API",
+        "description": "Categorizes maintenance requests, determines urgency, and provides self-check steps.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "request_text": {
+                    "type": "string",
+                    "example": "The toilet is overflowing."
+                  }
+                },
+                "required": ["request_text"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Classification result with self-check steps",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "category": { "type": "string" },
+                    "urgency": { "type": "string" },
+                    "summary": { "type": "string" },
+                    "self_check_steps": { "type": "array", "items": { "type": "string" } },
+                    "technician_required": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/document/analyze-lease": {
+      "post": {
+        "summary": "Lease Parsing API",
+        "description": "Extracts structured data and performs compliance/risk checks.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "lease_text": {
+                    "type": "string",
+                    "example": "Lease agreement between X and Y starting 2024-01-01..."
+                  }
+                },
+                "required": ["lease_text"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Extracted lease data with compliance analysis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "dates": { "type": "object" },
+                    "financials": { "type": "object" },
+                    "special_provisions": { "type": "array", "items": { "type": "string" } },
+                    "atypical_clauses": { "type": "array", "items": { "type": "string" } },
+                    "compliance_check": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

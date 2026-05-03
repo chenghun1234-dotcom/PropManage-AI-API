@@ -1,0 +1,16 @@
+{
+  "name": "propmanage-ai-api",
+  "version": "1.0.0",
+  "description": "B2B AI Property Management API",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  },
+  "dependencies": {
+    "itty-router": "^4.0.0"
+  }
+}
