@@ -64,39 +64,68 @@ const logToDB = async (env, endpoint, requestData, responseData, clientName = 'G
   }
 };
 
-// 1. Upgraded Lead Qualification API
-router.post('/api/v1/inquiry/respond', async (request, env) => {
-  const { inquiry, property_info, custom_system_prompt } = await request.json();
-  
-  if (!inquiry) return errorResponse('Missing inquiry text');
-
-  // Ultra Tier Feature: Custom Prompt Tuning
-  let systemPrompt = `You are a professional AI Property Manager. Answer based on property info. Evaluate lead 1-10.
-  Property Info: ${JSON.stringify(property_info || "General info")}`;
-  
-  if (request.client?.tier === 'Ultra' && custom_system_prompt) {
-    systemPrompt = custom_system_prompt + " | Context: " + systemPrompt;
-  }
+// 1. RAG Ingest API (Admin Only)
+router.post('/api/v1/admin/ingest', async (request, env) => {
+  const { text, metadata } = await request.json();
+  if (!text) return errorResponse('Missing text for ingestion');
 
   try {
+    // Generate Embedding
+    const embeddingResponse = await env.AI.run('@cf/baai/bge-small-en-v1.5', { text: [text] });
+    const vector = embeddingResponse.data[0];
+
+    // Store in Vectorize
+    const id = crypto.randomUUID();
+    await env.VECTORIZE.upsert([{
+      id,
+      values: vector,
+      metadata: { text, ...metadata }
+    }]);
+
+    return new Response(JSON.stringify({ success: true, id }), { headers: corsHeaders });
+  } catch (err) {
+    return errorResponse('Ingestion failed: ' + err.message, 500);
+  }
+});
+
+// 2. Upgraded Lead Qualification API with RAG
+router.post('/api/v1/inquiry/respond', async (request, env) => {
+  const { inquiry, property_info, custom_system_prompt } = await request.json();
+  if (!inquiry) return errorResponse('Missing inquiry text');
+
+  try {
+    // RAG: Search for relevant knowledge
+    const queryEmbedding = await env.AI.run('@cf/baai/bge-small-en-v1.5', { text: [inquiry] });
+    const vector = queryEmbedding.data[0];
+    const matches = await env.VECTORIZE.query(vector, { topK: 3, returnMetadata: true });
+    
+    const knowledgeContext = matches.matches
+      .map(m => m.metadata?.text)
+      .filter(Boolean)
+      .join('\n---\n');
+
+    let systemPrompt = `You are an expert AI Property Manager. 
+    Use the provided Knowledge Base and Property Info to answer.
+    
+    Knowledge Base: ${knowledgeContext || "No specific rules found."}
+    Property Info: ${JSON.stringify(property_info || "General info")}
+    
+    Evaluate lead 1-10. Return JSON.`;
+    
+    if (request.client?.tier === 'Ultra' && custom_system_prompt) {
+      systemPrompt = custom_system_prompt + "\n" + systemPrompt;
+    }
+
     const response = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: inquiry }
-      ],
+      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: inquiry }],
       response_format: { type: 'json_object' }
     });
 
     let result = typeof response.response === 'string' ? JSON.parse(response.response) : response.response;
-    
-    // DB Logging
     await logToDB(env, '/api/v1/inquiry/respond', { inquiry, property_info, apiKey: request.headers.get('X-API-Key') }, result);
-
-    return new Response(JSON.stringify(result), { 
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-    });
+    return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (err) {
-    return errorResponse('AI processing failed: ' + err.message, 500);
+    return errorResponse(err.message, 500);
   }
 });
 
@@ -276,99 +305,124 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PropManage AI | Premium B2B API</title>
+    <title>PropManage AI | Enterprise Property Intelligence</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        :root { --primary: #6366f1; --primary-glow: rgba(99, 102, 241, 0.5); --bg: #0f172a; --card-bg: rgba(30, 41, 59, 0.7); --text: #f8fafc; --text-dim: #94a3b8; --accent: #10b981; }
+        :root { --primary: #6366f1; --primary-glow: rgba(99, 102, 241, 0.4); --bg: #020617; --card-bg: rgba(15, 23, 42, 0.6); --text: #f8fafc; --text-dim: #94a3b8; --accent: #10b981; }
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Outfit', sans-serif; }
-        body { background: var(--bg); color: var(--text); overflow-x: hidden; background-image: radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 40%), radial-gradient(circle at 80% 80%, rgba(16, 185, 129, 0.1) 0%, transparent 40%); min-height: 100vh; scroll-behavior: smooth; }
-        .navbar { display: flex; justify-content: space-between; padding: 2rem 5%; align-items: center; backdrop-filter: blur(10px); position: sticky; top: 0; z-index: 100; }
-        .logo { font-size: 1.5rem; font-weight: 700; background: linear-gradient(to right, #818cf8, #34d399); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -1px; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 4rem 5%; }
-        .hero { text-align: center; margin-bottom: 6rem; }
-        .hero h1 { font-size: 4rem; margin-bottom: 1.5rem; line-height: 1.1; font-weight: 700; }
-        .hero p { color: var(--text-dim); font-size: 1.2rem; max-width: 600px; margin: 0 auto 2rem; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem; }
-        .card { background: var(--card-bg); border: 1px solid rgba(255, 255, 255, 0.1); padding: 2.5rem; border-radius: 24px; backdrop-filter: blur(12px); transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); position: relative; overflow: hidden; }
-        .card:hover { transform: translateY(-10px); border-color: var(--primary); box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4); }
-        .card i { font-size: 2rem; margin-bottom: 1.5rem; display: block; }
-        .card h3 { font-size: 1.5rem; margin-bottom: 1rem; }
-        .card p { color: var(--text-dim); line-height: 1.6; }
-        .endpoint { font-family: monospace; background: rgba(0,0,0,0.3); padding: 0.5rem; border-radius: 8px; display: inline-block; margin-top: 1.5rem; font-size: 0.8rem; color: var(--primary); }
-        .cta-button { background: var(--primary); color: white; padding: 1rem 2rem; border-radius: 12px; text-decoration: none; font-weight: 600; display: inline-block; transition: all 0.3s; box-shadow: 0 4px 15px var(--primary-glow); border: none; cursor: pointer; }
-        .cta-button:hover { transform: scale(1.05); box-shadow: 0 8px 25px var(--primary-glow); }
-        .section-title { text-align: center; margin-bottom: 4rem; font-size: 2.5rem; }
-        #admin-panel, #code-snippets { margin-top: 8rem; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 32px; padding: 4rem; }
-        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4rem; align-items: center; }
-        .chart-container { background: rgba(0,0,0,0.2); padding: 2rem; border-radius: 24px; border: 1px solid rgba(255,255,255,0.05); }
-        #playground { margin-top: 8rem; padding: 4rem; background: var(--card-bg); border-radius: 32px; }
-        .playground-content { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
-        textarea, .code-box { width: 100%; height: 350px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 1.5rem; color: white; font-family: monospace; resize: none; overflow: auto; }
-        .result-box { background: #000; border-radius: 16px; padding: 1.5rem; font-family: monospace; color: var(--accent); overflow-y: auto; height: 350px; border: 1px solid var(--primary); }
-        .tab-buttons { display: flex; gap: 1rem; margin-bottom: 2rem; justify-content: center; }
-        .tab-btn { background: none; border: 1px solid rgba(255, 255, 255, 0.1); color: var(--text-dim); padding: 0.8rem 1.5rem; border-radius: 100px; cursor: pointer; transition: all 0.2s; }
-        .tab-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+        body { background: var(--bg); color: var(--text); overflow-x: hidden; background-image: radial-gradient(circle at 0% 0%, rgba(99, 102, 241, 0.1) 0%, transparent 50%), radial-gradient(circle at 100% 100%, rgba(16, 185, 129, 0.05) 0%, transparent 50%); min-height: 100vh; scroll-behavior: smooth; }
+        .navbar { display: flex; justify-content: space-between; padding: 1.5rem 8%; align-items: center; backdrop-filter: blur(20px); position: sticky; top: 0; z-index: 1000; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .logo { font-size: 1.8rem; font-weight: 800; background: linear-gradient(135deg, #818cf8 0%, #34d399 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -1.5px; }
+        .container { max-width: 1300px; margin: 0 auto; padding: 4rem 8%; }
+        
+        /* Hero Section */
+        .hero { text-align: center; padding: 6rem 0; animation: fadeIn 1s ease-out; }
+        .hero h1 { font-size: 5rem; margin-bottom: 1.5rem; line-height: 1; font-weight: 700; letter-spacing: -2px; }
+        .hero p { color: var(--text-dim); font-size: 1.4rem; max-width: 700px; margin: 0 auto 3rem; line-height: 1.6; }
+        .badge { background: rgba(99, 102, 241, 0.1); color: var(--primary); padding: 0.5rem 1.2rem; border-radius: 100px; font-weight: 600; font-size: 0.9rem; margin-bottom: 2rem; display: inline-block; border: 1px solid rgba(99, 102, 241, 0.2); }
+
+        /* Grid */
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 2.5rem; margin-top: 4rem; }
+        .card { background: var(--card-bg); border: 1px solid rgba(255, 255, 255, 0.05); padding: 3rem; border-radius: 32px; backdrop-filter: blur(20px); transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); position: relative; }
+        .card:hover { transform: translateY(-12px) scale(1.02); border-color: var(--primary); box-shadow: 0 40px 80px rgba(0, 0, 0, 0.5); }
+        .card i { font-size: 2.5rem; margin-bottom: 2rem; display: block; filter: drop-shadow(0 0 10px var(--primary-glow)); }
+        .card h3 { font-size: 1.8rem; margin-bottom: 1.2rem; }
+        .card p { color: var(--text-dim); line-height: 1.8; font-size: 1.1rem; }
+
+        /* Playground Sections */
+        .glass-panel { margin-top: 8rem; background: var(--card-bg); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 40px; padding: 4rem; position: relative; overflow: hidden; }
+        .glass-panel::before { content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: radial-gradient(circle, rgba(99, 102, 241, 0.03) 0%, transparent 70%); z-index: -1; }
+        
+        .playground-content { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; margin-top: 3rem; }
+        textarea, .code-box { width: 100%; height: 400px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.05); border-radius: 24px; padding: 2rem; color: #fff; font-family: 'JetBrains Mono', monospace; font-size: 0.95rem; line-height: 1.6; resize: none; outline: none; }
+        textarea:focus { border-color: var(--primary); }
+        .result-box { background: #000; border-radius: 24px; padding: 2rem; font-family: monospace; color: var(--accent); overflow-y: auto; height: 400px; border: 1px solid var(--primary); box-shadow: inset 0 0 20px rgba(16, 185, 129, 0.1); }
+
+        .cta-button { background: linear-gradient(135deg, var(--primary) 0%, #4f46e5 100%); color: white; padding: 1.2rem 2.5rem; border-radius: 16px; text-decoration: none; font-weight: 700; display: inline-block; transition: all 0.3s; box-shadow: 0 10px 30px var(--primary-glow); border: none; cursor: pointer; font-size: 1.1rem; }
+        .cta-button:hover { transform: translateY(-3px) scale(1.05); box-shadow: 0 15px 40px var(--primary-glow); }
+        
+        .tab-buttons { display: flex; gap: 1rem; margin-bottom: 2.5rem; justify-content: center; }
+        .tab-btn { background: rgba(255,255,255,0.03); border: 1px solid rgba(255, 255, 255, 0.1); color: var(--text-dim); padding: 0.8rem 1.8rem; border-radius: 100px; cursor: pointer; transition: all 0.3s; font-weight: 600; }
+        .tab-btn.active { background: var(--primary); color: white; border-color: var(--primary); box-shadow: 0 0 20px var(--primary-glow); }
+
+        .stats-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 3rem; margin-top: 3rem; }
+        .chart-container { background: rgba(0,0,0,0.3); padding: 2.5rem; border-radius: 32px; border: 1px solid rgba(255,255,255,0.05); }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
     <nav class="navbar">
-        <div class="logo">PROPMANAGE AI</div>
-        <div style="display: flex; gap: 1.5rem;">
-            <a href="#playground" class="tab-btn">Playground</a>
-            <a href="#code-snippets" class="tab-btn">Connect SDK</a>
-            <a href="#admin-panel" class="cta-button">Admin Portal</a>
+        <div class="logo">PROPMANAGE.AI</div>
+        <div style="display: flex; gap: 2rem; align-items: center;">
+            <a href="#lab" class="tab-btn">Knowledge Lab</a>
+            <a href="#playground" class="tab-btn">API Console</a>
+            <a href="#admin" class="cta-button">Enterprise Access</a>
         </div>
     </nav>
 
     <div class="container">
         <header class="hero">
-            <h1>Enterprise <span style="color: var(--accent)">Property Intelligence</span></h1>
-            <p>The global standard for AI-driven property management. Scale your operations with edge-native speed and LLM-powered accuracy.</p>
+            <div class="badge">Next-Gen Property Management</div>
+            <h1>RAG-Powered <span style="color: var(--accent)">AI Property Agent</span></h1>
+            <p>Go beyond basic automation. Our Edge-native RAG engine allows AI to ingest your property rules and respond with 100% factual accuracy.</p>
+            <div style="display: flex; gap: 1.5rem; justify-content: center;">
+                <a href="#lab" class="cta-button">Train Your AI</a>
+                <a href="#playground" class="tab-btn" style="padding: 1.2rem 2.5rem; font-size: 1.1rem;">Explore APIs</a>
+            </div>
         </header>
 
-        <div class="grid">
-            <div class="card"><i>🤖</i><h3>Lead Qualification</h3><p>Score leads and automate responses with deep intent analysis and language detection.</p><div class="endpoint">POST /api/v1/inquiry/respond</div></div>
-            <div class="card"><i>🛠️</i><h3>Maintenance Triage</h3><p>Classify repairs and provide cost-saving self-check steps instantly via text or voice.</p><div class="endpoint">POST /api/v1/maintenance/classify</div></div>
-            <div class="card"><i>📄</i><h3>Lease Analysis</h3><p>Extract data and detect risky clauses or compliance issues in seconds.</p><div class="endpoint">POST /api/v1/document/analyze-lease</div></div>
-        </div>
-
-        <section id="playground">
-            <h2 class="section-title">API Explorer</h2>
-            <div class="tab-buttons">
-                <button class="tab-btn active" onclick="switchTab('inquiry')">Lead Response</button>
-                <button class="tab-btn" onclick="switchTab('maintenance')">Maintenance</button>
-                <button class="tab-btn" onclick="switchTab('lease')">Lease Parser</button>
-            </div>
+        <section id="lab" class="glass-panel">
+            <h2 class="section-title" style="text-align: center; margin-bottom: 1rem;">Knowledge Lab (RAG Engine)</h2>
+            <p style="text-align: center; color: var(--text-dim); margin-bottom: 3rem;">Ingest property rules, manuals, or legal docs directly into the AI's long-term memory.</p>
             <div class="playground-content">
                 <div>
-                    <textarea id="input-payload">{
-  "inquiry": "Is the deposit negotiable? I have a small cat.",
-  "property_info": { "deposit": "$2000", "pet_policy": "Small pets allowed" }
-}</textarea>
-                    <button class="cta-button" style="width: 100%; margin-top: 1rem;" onclick="testAPI()">Run Request</button>
+                    <h4 style="margin-bottom: 1rem;">Document Ingestion</h4>
+                    <textarea id="ingest-text" placeholder="Paste property rules here... e.g. 'Parking violation fine is $50. Residents must use the back entrance for moving.'"></textarea>
+                    <button class="cta-button" style="width: 100%; margin-top: 1.5rem;" onclick="ingestKnowledge()">Store in Vector DB</button>
                 </div>
-                <div class="result-box" id="result-display">// Response will appear here...</div>
+                <div>
+                    <h4 style="margin-bottom: 1rem;">Knowledge Base Status</h4>
+                    <div class="result-box" id="ingest-status">// Ready to absorb knowledge...</div>
+                </div>
             </div>
         </section>
 
-        <section id="code-snippets">
-            <h2 class="section-title">Connect to Your App</h2>
+        <div class="grid">
+            <div class="card"><i>🧠</i><h3>RAG Intelligence</h3><p>Context-aware responses based on your specific legal docs and property rules.</p></div>
+            <div class="card"><i>🎙️</i><h3>Voice Triage</h3><p>Direct-to-ticket voice processing with automated urgency detection.</p></div>
+            <div class="card"><i>🚀</i><h3>Edge Native</h3><p>Zero-latency performance powered by Cloudflare's global network.</p></div>
+        </div>
+
+        <section id="playground" class="glass-panel">
+            <h2 class="section-title" style="text-align: center; margin-bottom: 3rem;">API Explorer</h2>
             <div class="tab-buttons">
-                <button class="tab-btn active" onclick="switchCode('javascript')">JavaScript (Fetch)</button>
-                <button class="tab-btn" onclick="switchCode('curl')">cURL</button>
-                <button class="tab-btn" onclick="switchCode('python')">Python</button>
+                <button class="tab-btn active" onclick="switchTab('inquiry')">Lead Agent</button>
+                <button class="tab-btn" onclick="switchTab('maintenance')">Repair Triage</button>
+                <button class="tab-btn" onclick="switchCode('javascript')">SDK: JS</button>
+                <button class="tab-btn" onclick="switchCode('curl')">SDK: cURL</button>
             </div>
-            <div class="code-box" id="code-display"></div>
+            <div class="playground-content">
+                <div id="input-container">
+                    <textarea id="input-payload">{
+  "inquiry": "What is the fine for parking violations?",
+  "property_info": { "name": "Emerald Heights" }
+}</textarea>
+                    <button class="cta-button" style="width: 100%; margin-top: 1.5rem;" onclick="testAPI()">Execute API Call</button>
+                </div>
+                <div id="output-container">
+                    <div class="result-box" id="result-display">// AI result will manifest here...</div>
+                </div>
+            </div>
         </section>
 
-        <section id="admin-panel">
-            <h2 class="section-title">Admin Analytics</h2>
+        <section id="admin" class="glass-panel">
+            <h2 class="section-title" style="text-align: center; margin-bottom: 3rem;">Real-time Analytics</h2>
             <div class="stats-grid">
-                <div class="chart-container"><h4 style="margin-bottom: 1.5rem; text-align: center;">API Usage</h4><canvas id="usageChart"></canvas></div>
-                <div class="chart-container"><h4 style="margin-bottom: 1.5rem; text-align: center;">Maintenance Distribution</h4><canvas id="distChart"></canvas></div>
+                <div class="chart-container"><canvas id="usageChart"></canvas></div>
+                <div class="chart-container"><canvas id="distChart"></canvas></div>
             </div>
-            <button class="cta-button" style="display: block; margin: 3rem auto 0;" onclick="refreshStats()">Refresh Insights</button>
         </section>
     </div>
 
@@ -376,78 +430,73 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         let currentEndpoint = '/api/v1/inquiry/respond';
         let usageChart, distChart;
 
-        const payloads = {
-            inquiry: { "inquiry": "Deposit negotiable?", "property_info": { "deposit": "$2000" } },
-            maintenance: { "request_text": "Sink leaking" },
-            lease: { "lease_text": "Standard Lease Agreement..." }
-        };
-
-        const snippets = {
-            javascript: \`fetch('https://' + window.location.host + '/api/v1/inquiry/respond', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'X-API-Key': 'YOUR_API_KEY'
-  },
-  body: JSON.stringify({
-    inquiry: "Is the deposit negotiable?",
-    property_info: { deposit: "$2000" }
-  })
-}).then(res => res.json()).then(console.log);\`,
-            curl: \`curl -X POST https://' + window.location.host + '/api/v1/inquiry/respond \\\\
-  -H "Content-Type: application/json" \\\\
-  -H "X-API-Key: YOUR_API_KEY" \\\\
-  -d '{"inquiry": "Is the deposit negotiable?", "property_info": {"deposit": "$2000"}}'\`,
-            python: \`import requests
-url = "https://" + window.location.host + "/api/v1/inquiry/respond"
-headers = {"X-API-Key": "YOUR_API_KEY"}
-data = {"inquiry": "Is the deposit negotiable?", "property_info": {"deposit": "$2000"}}
-response = requests.post(url, json=data, headers=headers)
-print(response.json())\`
-        };
+        async function ingestKnowledge() {
+            const text = document.getElementById('ingest-text').value;
+            const status = document.getElementById('ingest-status');
+            status.innerText = '// Embedding and Indexing...';
+            try {
+                const res = await fetch('/api/v1/admin/ingest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text, metadata: { source: 'dashboard' } })
+                });
+                const data = await res.json();
+                status.innerText = '✅ Successfully stored in Vectorize Index!\\nID: ' + data.id;
+            } catch (e) { status.innerText = '❌ Failed: ' + e.message; }
+        }
 
         function switchTab(type) {
             document.querySelectorAll('#playground .tab-btn').forEach(b => b.classList.remove('active'));
             event.target.classList.add('active');
-            currentEndpoint = '/api/v1/' + (type === 'inquiry' ? 'inquiry/respond' : (type === 'maintenance' ? 'maintenance/classify' : 'document/analyze-lease'));
+            currentEndpoint = '/api/v1/' + (type === 'inquiry' ? 'inquiry/respond' : 'maintenance/classify');
+            const payloads = {
+                inquiry: { "inquiry": "What is the parking fine?", "property_info": { "name": "Emerald Heights" } },
+                maintenance: { "request_text": "Water leaking from ceiling" }
+            };
             document.getElementById('input-payload').value = JSON.stringify(payloads[type], null, 2);
+            document.getElementById('input-container').style.display = 'block';
+            document.getElementById('output-container').style.width = '100%';
         }
 
         function switchCode(lang) {
-            document.querySelectorAll('#code-snippets .tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('#playground .tab-btn').forEach(b => b.classList.remove('active'));
             event.target.classList.add('active');
-            document.getElementById('code-display').innerText = snippets[lang];
+            const code = {
+                javascript: \`fetch('/api/v1/inquiry/respond', {\\\\n  method: 'POST',\\\\n  headers: { 'X-API-Key': 'YOUR_KEY' },\\\\n  body: JSON.stringify({ inquiry: '...' })\\\\n})\`,
+                curl: \`curl -X POST /api/v1/inquiry/respond -H "X-API-Key: YOUR_KEY" -d '{"inquiry": "..."}'\`
+            };
+            document.getElementById('input-payload').value = code[lang];
         }
 
         async function testAPI() {
             const display = document.getElementById('result-display');
-            display.innerText = '// Processing via Edge AI...';
+            display.innerText = '// Searching Knowledge Base & Reasoning...';
             try {
-                const response = await fetch(currentEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: document.getElementById('input-payload').value });
+                const response = await fetch(currentEndpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: document.getElementById('input-payload').value
+                });
                 const data = await response.json();
                 display.innerText = JSON.stringify(data, null, 2);
                 refreshStats();
-            } catch (e) { display.innerText = '// Error: ' + e.message; }
+            } catch (e) { display.innerText = '❌ Error: ' + e.message; }
         }
 
         async function refreshStats() {
             try {
                 const res = await fetch('/api/v1/admin/stats');
                 const data = await res.json();
-                updateCharts(data);
+                const usageCtx = document.getElementById('usageChart').getContext('2d');
+                const distCtx = document.getElementById('distChart').getContext('2d');
+                if (usageChart) usageChart.destroy();
+                if (distChart) distChart.destroy();
+                usageChart = new Chart(usageCtx, { type: 'line', data: { labels: data.usage.map(u => u.endpoint.split('/').pop()), datasets: [{ label: 'API Calls', data: data.usage.map(u => u.count), borderColor: '#6366f1', tension: 0.4 }] }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } } });
+                distChart = new Chart(distCtx, { type: 'doughnut', data: { labels: data.maintenance_distribution.map(d => d.category), datasets: [{ data: data.maintenance_distribution.map(d => d.count), backgroundColor: ['#10b981', '#f59e0b', '#ef4444', '#6366f1'] }] } });
             } catch (e) { console.error('Stats failed', e); }
         }
 
-        function updateCharts(data) {
-            const usageCtx = document.getElementById('usageChart').getContext('2d');
-            const distCtx = document.getElementById('distChart').getContext('2d');
-            if (usageChart) usageChart.destroy();
-            if (distChart) distChart.destroy();
-            usageChart = new Chart(usageCtx, { type: 'bar', data: { labels: data.usage.map(u => u.endpoint.split('/').pop()), datasets: [{ label: 'Calls', data: data.usage.map(u => u.count), backgroundColor: '#6366f1' }] }, options: { plugins: { legend: { display: false } } } });
-            distChart = new Chart(distCtx, { type: 'doughnut', data: { labels: data.maintenance_distribution.map(d => d.category || 'Other'), datasets: [{ data: data.maintenance_distribution.map(d => d.count), backgroundColor: ['#10b981', '#f59e0b', '#ef4444', '#6366f1'] }] } });
-        }
-
-        window.onload = () => { refreshStats(); switchCode('javascript'); };
+        window.onload = refreshStats;
     </script>
 </body>
 </html>`;

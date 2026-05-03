@@ -11,5 +11,9 @@ binding = "DB"
 database_name = "propmanage-db"
 database_id = "ff6063f0-70f7-4149-ae7d-1c71d5f1fc2f"
 
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "propmanage-index"
+
 [observability]
 enabled = true
