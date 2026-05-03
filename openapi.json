@@ -149,5 +149,54 @@
         }
       }
     }
+    "/api/v1/maintenance/audio-triage": {
+      "post": {
+        "summary": "Audio-to-Triage API",
+        "description": "Directly processes audio files (wav/mp3) using Whisper STT and Llama 3 classification.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "audio/mpeg": { "schema": { "type": "string", "format": "binary" } },
+            "audio/wav": { "schema": { "type": "string", "format": "binary" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transcription and classification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "transcription": { "type": "string" },
+                    "category": { "type": "string" },
+                    "urgency": { "type": "string" },
+                    "self_check_steps": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/stats": {
+      "get": {
+        "summary": "Admin Analytics API",
+        "description": "Returns usage statistics and maintenance distribution for the dashboard.",
+        "responses": {
+          "200": {
+            "description": "Usage analytics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
