@@ -1,4 +1,4 @@
-name = "propmanage-ai-api"
+name = "propmanageaiapi"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 account_id = "8253b30c0106148cfe2add2a62792196"
