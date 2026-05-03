@@ -11,7 +11,7 @@
   },
   "servers": [
     {
-      "url": "https://propmanage-ai-api.your-subdomain.workers.dev",
+      "url": "https://propmanageaiapi.chenghun1234.workers.dev",
       "description": "Production server"
     }
   ],
@@ -148,7 +148,7 @@
           }
         }
       }
-    }
+    },
     "/api/v1/maintenance/audio-triage": {
       "post": {
         "summary": "Audio-to-Triage API",
